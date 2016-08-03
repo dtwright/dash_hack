@@ -15,38 +15,72 @@ import time
 import json
 import urllib2
 import datetime
+import os
+import pychromecast
 
 # Use your own IFTTT key, not this fake one
-ifttt_key = 'fakekey'
+ifttt_key = 'cwFZ6OfWoaUYQWiP7zilna'
 # the number of seconds after a dash button is pressed that it will not trigger another event
 # the reason is that dash buttons may try to send ARP onto the network during several seconds
 # before giving up
-trigger_timeout = 5
+# this is long b/c I'm using one as a doorbell...
+trigger_timeout = 10
 
-# Replace these fake MAC addresses and nicknames with your own
-# the nickname of the dash buttons is what will be used as the event name
-# when triggering the IFTTT maker channel, e.g. https://maker.ifttt.com/trigger/<nickname>/with/key/<ifttt_key>
+# base directory where this script (and the radio script) lives
+base_dir = '/home/dtwright/dash_hack'
+
+# Replace these fake MAC addresses and events
+# the event will be parsed to decide what to do. currently there are two things: trigger
+# ifttt maker channel event, or start a Chromecast radio station
+# note: media events shouldn't have spaces in their path; this should get fixed sometime
 macs = {
-    '747500000001' : 'dash_gerber',
-    '747500000002' : 'dash_elements1',
-    '747500000003' : 'dash_elements2',
-    '747500000004' : 'dash_cottonelle',
-    '747500000005' : 'dash_huggies'
+    '44650de9a1a8' : 'ifttt:dash_doorbell',
+    '44650d6a9a56' : 'radio:http://pubint.ic.llnwd.net/stream/pubint_wvtf128',
+    '0c47c96c1d01' : 'radio:http://media.wmra.org:8000/wmra',
+    '50f5da150bd7' : 'media:/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3'
 }
 
 # for recording the last time the event was triggered to avoid multiple events fired
 # for one press on the dash button
 trigger_time = {}
 
+# hack to make sure chromecast has an appid - needs real fixing
+def force_cc_appid():
+    cast = pychromecast.get_chromecast()
+    cast.media_controller.play_media('','')
+
 # Trigger a IFTTT URL where the event is the same as the strings in macs (e.g. dash_gerber)
 # Body includes JSON with timestamp values.
 def trigger_url_generic(trigger):
-    data = '{ "value1" : "' + time.strftime("%Y-%m-%d") + '", "value2" : "' + time.strftime("%H:%M") + '" }'
-    req = urllib2.Request( 'https://maker.ifttt.com/trigger/'+trigger+'/with/key/'+ifttt_key , data, {'Content-Type': 'application/json'})
-    f = urllib2.urlopen(req)
-    response = f.read()
-    f.close()
-    return response
+    # parse the trigger 
+    if trigger[0:5] == 'ifttt':
+        # ifttt maker event
+        event = trigger[6:]
+        data = '{ "value1" : "' + time.strftime("%Y-%m-%d") + '", "value2" : "' + time.strftime("%H:%M") + '" }'
+        req = urllib2.Request( 'https://maker.ifttt.com/trigger/'+event+'/with/key/'+ifttt_key , data, {'Content-Type': 'application/json'})
+        f = urllib2.urlopen(req)
+        response = f.read()
+        f.close()
+        return response
+    elif trigger[0:5] == 'radio':
+        # radio station
+        url = trigger[6:]
+        force_cc_appid()
+        out = os.system(base_dir + '/toggle-radio.sh ' + url)
+        if out == 0: 
+            return "success"
+        else:
+            return "radio script fail"
+    elif trigger[0:5] == 'media':
+        path = trigger[6:]
+        force_cc_appid()
+        out = os.system(base_dir + '/play-media.sh "' + path + '"')
+        if out == 0: 
+            return "success"
+        else:
+            return "castnow failure"
+    else:
+        return "unknown trigger type: "+trigger
 
 def record_trigger(trigger):
     print 'triggering '+ trigger +' event, response: ' + trigger_url_generic(trigger)
@@ -64,8 +98,6 @@ def has_already_triggered(trigger):
 
     trigger_time[trigger] = datetime.datetime.now()
     return False
-
-
 
 rawSocket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
 
