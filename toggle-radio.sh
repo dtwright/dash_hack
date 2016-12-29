@@ -11,7 +11,7 @@ fi
 
 # clean up any stray junk that might interfere
 pids=`ps ax | grep castnow | grep -v grep | awk '{print $1}'`
-kill $pids
+kill $pids > /dev/null 2>&1
 sleep 1
 
 # start with given URL

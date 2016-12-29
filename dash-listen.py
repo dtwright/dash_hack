@@ -34,9 +34,11 @@ base_dir = '/home/dtwright/dash_hack'
 # ifttt maker channel event, or start a Chromecast radio station
 # note: media events shouldn't have spaces in their path; this should get fixed sometime
 macs = {
-    '44650de9a1a8' : 'ifttt:dash_doorbell',
+    # '44650de9a1a8' : 'ifttt:dash_doorbell',
+    # '0c47c96c1d01' : 'radio:http://media.wmra.org:8000/wmra',
+    # ^^^this button seems to be broken...
     '44650d6a9a56' : 'radio:http://pubint.ic.llnwd.net/stream/pubint_wvtf128',
-    '0c47c96c1d01' : 'radio:http://media.wmra.org:8000/wmra',
+    '44650de9a1a8' : 'radio:http://media.wmra.org:8000/wmra',
     '50f5da150bd7' : 'media:/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3'
 }
 
