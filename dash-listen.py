@@ -4,9 +4,7 @@
 # improvement from original script:
 # - New dash buttons can be added by just adding a new nickname to the macs dictionary
 # - Will not trigger multiple events for one press (see trigger_timeout below)
-
-# if you want to run this script as an ubuntu service, check out
-# http://askubuntu.com/questions/175751/how-do-i-run-a-python-script-in-the-background-and-restart-it-after-a-crash
+# - Does lots of Chromecast media stuff in-line 
 
 import socket
 import struct
@@ -17,6 +15,10 @@ import urllib2
 import datetime
 import os
 import pychromecast
+import string
+import BaseHTTPServer
+import os
+from threading import Thread
 
 # Use your own IFTTT key, not this fake one
 ifttt_key = 'cwFZ6OfWoaUYQWiP7zilna'
@@ -26,30 +28,175 @@ ifttt_key = 'cwFZ6OfWoaUYQWiP7zilna'
 # this is long b/c I'm using one as a doorbell...
 trigger_timeout = 10
 
-# base directory where this script (and the radio script) lives
-base_dir = '/home/dtwright/dash_hack'
+# radio toggle tracking - hack because chromecast status retrival isn't working
+# (maybe because this process has the interface in promisc mode??)
+radio_is_playing = False
+
+# hang on to the chromecasts 
+all_casts = [];
+
+# ip/hostname and port to serve local media from
+MEDIA_HTTP_HOST = "192.168.1.102"
+MEDIA_HTTP_PORT = 4101
 
 # Replace these fake MAC addresses and events
 # the event will be parsed to decide what to do. currently there are two things: trigger
 # ifttt maker channel event, or start a Chromecast radio station
 # note: media events shouldn't have spaces in their path; this should get fixed sometime
+#
+# format is event_type:event_details
+#
+# for Chromecast events (media or radio), details are <device_name>,<media_path_or_url>,<mime_type>
+# note: if mime_type is omitted, 'audio/mpeg' will be assumed
 macs = {
     # '44650de9a1a8' : 'ifttt:dash_doorbell',
-    # '0c47c96c1d01' : 'radio:http://media.wmra.org:8000/wmra',
-    # ^^^this button seems to be broken...
-    '44650d6a9a56' : 'radio:http://pubint.ic.llnwd.net/stream/pubint_wvtf128',
-    '44650de9a1a8' : 'radio:http://media.wmra.org:8000/wmra',
-    '50f5da150bd7' : 'media:/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3'
+    '44650d6a9a56' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
+    '44650de9a1a8' : 'radio:kitchen,http://media.wmra.org:8000/wmra,audio/mpeg',
+    '50f5da150bd7' : 'media:kitchen,/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3,audio/mpeg'
+    #'50f5da150bd7' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
 }
 
 # for recording the last time the event was triggered to avoid multiple events fired
 # for one press on the dash button
 trigger_time = {}
 
-# hack to make sure chromecast has an appid - needs real fixing
-def force_cc_appid():
-    cast = pychromecast.get_chromecast()
-    cast.media_controller.play_media('','')
+def lcitem(i):
+    return i.lower()
+
+def play_error(mc):
+    print "error..."
+
+# creates an http server that will present the data for the 
+# passed-in file
+#
+# resulting URL will always be http://MEDIA_HTTP_HOST:MEDIA_HTTP_PORT/
+#
+# note: should be launched in a thread!
+def file_streamserve(path,size,mime,host,port):
+    # local media streamer class definition
+    class LocalHTTPMediaStreamer(BaseHTTPServer.BaseHTTPRequestHandler):
+        def do_HEAD(s):
+            s.send_response(200)
+            s.send_header("Content-Type", mime)
+            s.end_headers()
+        def do_GET(s):
+            # get the file info and data
+            fh = open(path,'r')
+
+            s.send_response(200)
+            s.send_header("Content-Type", mime)
+            s.send_header("Content-Length", size)
+            s.end_headers()
+            s.wfile.write(fh.read())
+    # end class def
+    httpd = BaseHTTPServer.HTTPServer((host, port), LocalHTTPMediaStreamer)
+    try:
+        httpd.handle_request()
+    except:
+        print "httpd server failure!"
+
+def get_all_casts():
+    global all_casts
+    if len(all_casts) == 0:
+        all_casts = pychromecast.get_chromecasts()
+
+    return all_casts
+
+def get_cc_by_name(name):
+    ac = get_all_casts()
+    return next(cc for cc in ac if cc.device.friendly_name.lower() == name)
+
+def get_chromecast_names():
+    ccs = get_all_casts()
+    return [cc.device.friendly_name for cc in ccs]
+
+def force_stop_cc(cc_name):
+    # hack to stop media playing when MediaStatus/MediaController stuff isn't working right
+    cast = get_cc_by_name(cc_name)
+    cast.media_controller.play_media('http://bad_url/','application/bad-mime')
+
+def play_on_chromecast(ev_type,ev_detail):
+    global radio_is_playing
+
+    # parse for device name
+    parts = ev_detail.split(',')
+    dev_name = parts[0].lower()
+    media_path = parts[1]
+    if len(parts) < 3:
+        print "MIME not specified; assuming audio/mpeg"
+        mime = 'audio/mpeg'
+    else: 
+        mime = parts[2]
+
+    # make sure this is a valid device
+    devs = map(lcitem, get_chromecast_names())
+    try:
+        i = devs.index(dev_name)
+    except ValueError:
+        # we're done; specificied chromecast don't exist...
+        return "no such chromecast found: "+dev_name
+
+    # send the requested media to the device
+    cast = get_cc_by_name(dev_name)
+
+    # get media controller
+    mc = cast.media_controller
+
+    # depending on whether we're radio or media, we need to treat things somewhat
+    # differently... 
+
+    if ev_type == 'radio':
+        # radio acts as a toggle: stop playing if something is currently playing, 
+        # else play the requested thing
+        if radio_is_playing:
+            force_stop_cc(dev_name)
+            radio_is_playing = False
+            return "stopped"
+        else:
+            mc.play_media(media_path,mime)
+            radio_is_playing = True
+            # check status after a brief delay
+            # NOTE: isn't working due to status issues...
+            time.sleep(2)
+            if mc.is_idle and mc.status.idle_reason == 'ERROR':
+                # play the error tone using this media controller
+                play_error(mc)
+                radio_is_playing = False
+                return "error playing!"
+            else:
+                return "playing radio"
+
+    elif ev_type == 'media':
+        force_stop_cc(dev_name)
+        # get the file length -- check to be sure it exists at the same time
+        try:
+            media_size = os.path.getsize(media_path)
+        except:
+            play_error(mc)
+            return "media file "+media_path+" does not exist"
+
+        # launch http streamer in a thread
+        try:
+            t = Thread(target=file_streamserve, args=(media_path,media_size,mime,MEDIA_HTTP_HOST,MEDIA_HTTP_PORT,))
+            t.daemon = True
+            t.start()
+        except Exception as e: 
+            print "http server launch error: ", e
+            return "Error launching streamer thread!"
+
+        url = "http://" + MEDIA_HTTP_HOST + ":" + str(MEDIA_HTTP_PORT) + "/"
+        print("streaming from: "+url)
+        mc.play_media(url,mime)
+        # check status after a brief delay
+        # NOTE: isn't working due to status issues...
+        time.sleep(2)
+        if mc.is_idle and mc.status.idle_reason == 'ERROR':
+            # play the error tone using this media controller
+            play_error(mc)
+            return "error playing!"
+        else:
+            return "playing media file"
+
 
 # Trigger a IFTTT URL where the event is the same as the strings in macs (e.g. dash_gerber)
 # Body includes JSON with timestamp values.
@@ -66,21 +213,9 @@ def trigger_url_generic(trigger):
         return response
     elif trigger[0:5] == 'radio':
         # radio station
-        url = trigger[6:]
-        force_cc_appid()
-        out = os.system(base_dir + '/toggle-radio.sh ' + url)
-        if out == 0: 
-            return "success"
-        else:
-            return "radio script fail"
+        return play_on_chromecast('radio',trigger[6:])
     elif trigger[0:5] == 'media':
-        path = trigger[6:]
-        force_cc_appid()
-        out = os.system(base_dir + '/play-media.sh "' + path + '"')
-        if out == 0: 
-            return "success"
-        else:
-            return "castnow failure"
+        return play_on_chromecast('media',trigger[6:])
     else:
         return "unknown trigger type: "+trigger
 
@@ -125,3 +260,5 @@ while True:
 
     elif source_ip == '0.0.0.0':
         print "Unknown dash button detected with MAC " + source_mac
+
+
