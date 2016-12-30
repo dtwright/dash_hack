@@ -18,7 +18,12 @@ import pychromecast
 import string
 import BaseHTTPServer
 import os
+import random
+import sys
 from threading import Thread
+
+# global to control whether polling should be running
+DO_ARP_POLLING = True
 
 # Use your own IFTTT key, not this fake one
 ifttt_key = 'cwFZ6OfWoaUYQWiP7zilna'
@@ -54,6 +59,7 @@ macs = {
     '44650de9a1a8' : 'radio:kitchen,http://media.wmra.org:8000/wmra,audio/mpeg',
     '50f5da150bd7' : 'media:kitchen,/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3,audio/mpeg'
     #'50f5da150bd7' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
+    #'50f5da150bd7' : 'radio:kitchen,http://media.wmra.org:8000/wmra,audio/mpeg',
 }
 
 # for recording the last time the event was triggered to avoid multiple events fired
@@ -75,6 +81,7 @@ def play_error(mc):
 def file_streamserve(path,size,mime,host,port):
     # local media streamer class definition
     class LocalHTTPMediaStreamer(BaseHTTPServer.BaseHTTPRequestHandler):
+        global has_processed_req
         def do_HEAD(s):
             s.send_response(200)
             s.send_header("Content-Type", mime)
@@ -88,12 +95,18 @@ def file_streamserve(path,size,mime,host,port):
             s.send_header("Content-Length", size)
             s.end_headers()
             s.wfile.write(fh.read())
+            fh.close()
+            s.server.shutdown()
     # end class def
+
     httpd = BaseHTTPServer.HTTPServer((host, port), LocalHTTPMediaStreamer)
     try:
-        httpd.handle_request()
+        httpd.serve_forever()
     except:
         print "httpd server failure!"
+
+    # quit the thread
+    sys.exit()
 
 def get_all_casts():
     global all_casts
@@ -118,6 +131,9 @@ def force_stop_cc(cc_name):
 def play_on_chromecast(ev_type,ev_detail):
     global radio_is_playing
 
+    # short delay to make sure raw socket shutdown has finished
+    time.sleep(0.3)
+
     # parse for device name
     parts = ev_detail.split(',')
     dev_name = parts[0].lower()
@@ -141,6 +157,10 @@ def play_on_chromecast(ev_type,ev_detail):
 
     # get media controller
     mc = cast.media_controller
+    try:
+        mc.update_status()
+    except:
+        pass
 
     # depending on whether we're radio or media, we need to treat things somewhat
     # differently... 
@@ -148,8 +168,8 @@ def play_on_chromecast(ev_type,ev_detail):
     if ev_type == 'radio':
         # radio acts as a toggle: stop playing if something is currently playing, 
         # else play the requested thing
-        if radio_is_playing:
-            force_stop_cc(dev_name)
+        if mc.is_playing:
+            mc.stop()
             radio_is_playing = False
             return "stopped"
         else:
@@ -167,7 +187,7 @@ def play_on_chromecast(ev_type,ev_detail):
                 return "playing radio"
 
     elif ev_type == 'media':
-        force_stop_cc(dev_name)
+        mc.stop()
         # get the file length -- check to be sure it exists at the same time
         try:
             media_size = os.path.getsize(media_path)
@@ -176,15 +196,16 @@ def play_on_chromecast(ev_type,ev_detail):
             return "media file "+media_path+" does not exist"
 
         # launch http streamer in a thread
+        strm_port = MEDIA_HTTP_PORT + random.randint(0,1024)
         try:
-            t = Thread(target=file_streamserve, args=(media_path,media_size,mime,MEDIA_HTTP_HOST,MEDIA_HTTP_PORT,))
+            t = Thread(target=file_streamserve, args=(media_path,media_size,mime,MEDIA_HTTP_HOST,strm_port,))
             t.daemon = True
             t.start()
         except Exception as e: 
             print "http server launch error: ", e
             return "Error launching streamer thread!"
 
-        url = "http://" + MEDIA_HTTP_HOST + ":" + str(MEDIA_HTTP_PORT) + "/"
+        url = "http://" + MEDIA_HTTP_HOST + ":" + str(strm_port) + "/"
         print("streaming from: "+url)
         mc.play_media(url,mime)
         # check status after a brief delay
@@ -213,9 +234,15 @@ def trigger_url_generic(trigger):
         return response
     elif trigger[0:5] == 'radio':
         # radio station
-        return play_on_chromecast('radio',trigger[6:])
+        DO_ARP_POLLING = False
+        result = play_on_chromecast('radio',trigger[6:])
+        DO_ARP_POLLING = True
+        return result
     elif trigger[0:5] == 'media':
-        return play_on_chromecast('media',trigger[6:])
+        DO_ARP_POLLING = False
+        result = play_on_chromecast('media',trigger[6:])
+        DO_ARP_POLLING = True
+        return result
     else:
         return "unknown trigger type: "+trigger
 
@@ -236,29 +263,44 @@ def has_already_triggered(trigger):
     trigger_time[trigger] = datetime.datetime.now()
     return False
 
-rawSocket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
-
+# the following setup polls a raw socket for ARP packets, EXCEPT when interrupted by control 
+# variable DO_ARP_POLLING. this is needed because having the raw socket open interferes with
+# controlling the chromecast and getting status.
+socket_alloc = False
 while True:
-    packet = rawSocket.recvfrom(2048)
-    ethernet_header = packet[0][0:14]
-    ethernet_detailed = struct.unpack("!6s6s2s", ethernet_header)
-    # skip non-ARP packets
-    ethertype = ethernet_detailed[2]
-    if ethertype != '\x08\x06':
-        continue
-    arp_header = packet[0][14:42]
-    arp_detailed = struct.unpack("2s2s1s1s2s6s4s6s4s", arp_header)
-    source_mac = binascii.hexlify(arp_detailed[5])
-    source_ip = socket.inet_ntoa(arp_detailed[6])
-    dest_ip = socket.inet_ntoa(arp_detailed[8])
-    if source_mac in macs:
-        
-        if has_already_triggered(macs[source_mac]):
-            print "Culled duplicate trigger " + macs[source_mac]
-        else:
-            record_trigger(macs[source_mac])
+    while DO_ARP_POLLING:
+        if not socket_alloc:
+            rawSocket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
 
-    elif source_ip == '0.0.0.0':
-        print "Unknown dash button detected with MAC " + source_mac
+        packet = rawSocket.recvfrom(2048)
+        ethernet_header = packet[0][0:14]
+        ethernet_detailed = struct.unpack("!6s6s2s", ethernet_header)
+        # skip non-ARP packets
+        ethertype = ethernet_detailed[2]
+        if ethertype != '\x08\x06':
+            continue
+        arp_header = packet[0][14:42]
+        arp_detailed = struct.unpack("2s2s1s1s2s6s4s6s4s", arp_header)
+        source_mac = binascii.hexlify(arp_detailed[5])
+        source_ip = socket.inet_ntoa(arp_detailed[6])
+        dest_ip = socket.inet_ntoa(arp_detailed[8])
+        if source_mac in macs:
+            
+            if has_already_triggered(macs[source_mac]):
+                print "Culled duplicate trigger " + macs[source_mac]
+            else:
+                record_trigger(macs[source_mac])
+    
+        elif source_ip == '0.0.0.0':
+            print "Unknown dash button detected with MAC " + source_mac
+    
+    # we'll only get here if DO_ARP_POLLING has been set false
+    if socket_alloc:
+        rawSocket.shutdown()
+        rawSocket.close()
+        socket_alloc = False
+
+    # only run this outer loop every 1s
+    time.sleep(1)
 
 
