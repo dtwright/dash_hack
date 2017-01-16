@@ -55,7 +55,7 @@ MEDIA_HTTP_PORT = 4101
 # note: if mime_type is omitted, 'audio/mpeg' will be assumed
 macs = {
     # '44650de9a1a8' : 'ifttt:dash_doorbell',
-    '44650d6a9a56' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
+    '44650d6a9a56' : 'radio:kitchen,http://17253.live.streamtheworld.com/WVTFFM_128.mp3,audio/mpeg',
     '44650de9a1a8' : 'radio:kitchen,http://media.wmra.org:8000/wmra,audio/mpeg',
     '50f5da150bd7' : 'media:kitchen,/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3,audio/mpeg'
     #'50f5da150bd7' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
