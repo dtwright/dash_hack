@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 # The following script is an adjusted version of Aaron Bell's script
 # http://www.aaronbell.com/how-to-hack-amazons-wifi-button/
 
@@ -21,12 +23,21 @@ import os
 import random
 import sys
 from threading import Thread
+import sys
 
 # global to control whether polling should be running
 DO_ARP_POLLING = True
 
 # Use your own IFTTT key, not this fake one
 ifttt_key = 'xxxxxx'
+try:
+    f = open(os.path.dirname(os.path.realpath(__file__))+'/ifttt_key.txt', 'r')
+    ifttt_key = f.read().strip()
+    f.close()
+    print("read IFTTT key from file")
+except:
+    print("failed to read IFTTT key; calls to IFTTT API will probably fail", file=sys.stderr)
+
 # the number of seconds after a dash button is pressed that it will not trigger another event
 # the reason is that dash buttons may try to send ARP onto the network during several seconds
 # before giving up
@@ -70,7 +81,7 @@ def lcitem(i):
     return i.lower()
 
 def play_error(mc):
-    print "error..."
+    print("error...")
 
 # creates an http server that will present the data for the 
 # passed-in file
@@ -103,7 +114,7 @@ def file_streamserve(path,size,mime,host,port):
     try:
         httpd.serve_forever()
     except:
-        print "httpd server failure!"
+        print("httpd server failure!")
 
     # quit the thread
     sys.exit()
@@ -139,7 +150,7 @@ def play_on_chromecast(ev_type,ev_detail):
     dev_name = parts[0].lower()
     media_path = parts[1]
     if len(parts) < 3:
-        print "MIME not specified; assuming audio/mpeg"
+        print("MIME not specified; assuming audio/mpeg")
         mime = 'audio/mpeg'
     else: 
         mime = parts[2]
@@ -202,7 +213,7 @@ def play_on_chromecast(ev_type,ev_detail):
             t.daemon = True
             t.start()
         except Exception as e: 
-            print "http server launch error: ", e
+            print("http server launch error: ", e)
             return "Error launching streamer thread!"
 
         url = "http://" + MEDIA_HTTP_HOST + ":" + str(strm_port) + "/"
@@ -247,7 +258,7 @@ def trigger_url_generic(trigger):
         return "unknown trigger type: "+trigger
 
 def record_trigger(trigger):
-    print 'triggering '+ trigger +' event, response: ' + trigger_url_generic(trigger)
+    print('triggering '+ trigger +' event, response: ' + trigger_url_generic(trigger))
 
 def is_within_secs(last_time, diff):
     return (datetime.datetime.now() - last_time).total_seconds() < (diff +1)
@@ -287,12 +298,12 @@ while True:
         if source_mac in macs:
             
             if has_already_triggered(macs[source_mac]):
-                print "Culled duplicate trigger " + macs[source_mac]
+                print("Culled duplicate trigger " + macs[source_mac])
             else:
                 record_trigger(macs[source_mac])
     
         elif source_ip == '0.0.0.0':
-            print "Unknown dash button detected with MAC " + source_mac
+            print("Unknown dash button detected with MAC " + source_mac)
     
     # we'll only get here if DO_ARP_POLLING has been set false
     if socket_alloc:
