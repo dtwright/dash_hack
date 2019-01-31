@@ -66,7 +66,7 @@ MEDIA_HTTP_PORT = 4101
 # note: if mime_type is omitted, 'audio/mpeg' will be assumed
 macs = {
     # '44650de9a1a8' : 'ifttt:dash_doorbell',
-    '44650d6a9a56' : 'radio:kitchen,http://17253.live.streamtheworld.com/WVTFFM_128.mp3,audio/mpeg',
+    '44650d6a9a56' : 'radio:kitchen,https://wvtf.streamguys1.com/wvtf-edge/radioiq-mp3-64/icecast.audio',
     '44650de9a1a8' : 'radio:kitchen,http://media.wmra.org:8000/wmra,audio/mpeg',
     '50f5da150bd7' : 'media:kitchen,/data/audio/Kenny_Rogers/03-Just_Dropped_in.mp3,audio/mpeg'
     #'50f5da150bd7' : 'radio:kitchen,http://18153.live.streamtheworld.com/WVTFHD2_128.mp3,audio/mpeg',
@@ -218,6 +218,8 @@ def play_on_chromecast(ev_type,ev_detail):
 
         url = "http://" + MEDIA_HTTP_HOST + ":" + str(strm_port) + "/"
         print("streaming from: "+url)
+
+        time.sleep(5) # make sure there's time for the server to launch
         mc.play_media(url,mime)
         # check status after a brief delay
         # NOTE: isn't working due to status issues...
@@ -282,6 +284,7 @@ while True:
     while DO_ARP_POLLING:
         if not socket_alloc:
             rawSocket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+            socket_alloc = True
 
         packet = rawSocket.recvfrom(2048)
         ethernet_header = packet[0][0:14]
